@@ -19,11 +19,12 @@ trait HasRolesWithTenancies
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param string|array|\Spatie\Permission\Contracts\Role|\Illuminate\Support\Collection $roles
+     * @param $tenantId
      * @param string $guard
      *
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeRole(Builder $query, $roles, $guard = null): Builder
+    public function scopeRole(Builder $query, $roles, int $tenantId = null, $guard = null): Builder
     {
         if ($roles instanceof Collection) {
             $roles = $roles->all();
@@ -44,8 +45,12 @@ trait HasRolesWithTenancies
             return $this->getRoleClass()->{$method}($role, $guard);
         }, $roles);
 
-        return $query->whereHas('roles', function (Builder $subQuery) use ($roles) {
+        return $query->whereHas('roles', function (Builder $subQuery) use ($roles, $tenantId) {
             $subQuery->whereIn(config('permission.table_names.roles') . '.id', \array_column($roles, 'id'));
+
+            if (config('permission.multi_tenancy.enabled')) {
+                $subQuery->where(config('permission.multi_tenancy.column_name'), $tenantId);
+            }
         });
     }
 
@@ -117,12 +122,22 @@ trait HasRolesWithTenancies
      * @param string|null $guard
      * @return bool
      */
-    public function hasRole($roles, string $guard = null): bool
+    public function hasRole($roles, int $tenantId = null, string $guard = null): bool
     {
         if (is_string($roles) && false !== strpos($roles, '|')) {
             $roles = $this->convertPipeToArray($roles);
         }
 
+        // TODO:: start here
+        if (config('permission.multi_tenancy.enabled')) {
+            $this->whereHas('roles', function (Builder $subQuery) use ($tenantId) {
+                if (config('permission.multi_tenancy.enabled')) {
+                    $subQuery->where(config('permission.table_names.model_has_roles') . config('permission.multi_tenancy.column_name'), $tenantId);
+                }
+            });
+        }
+
+        dd($this->roles);
         if (is_string($roles)) {
             return $guard
                 ? $this->roles->where('guard_name', $guard)->contains('name', $roles)

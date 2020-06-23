@@ -1,5 +1,6 @@
 <?php
 
+use App\User;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -16,5 +17,11 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', function () {
     $user = factory('App\User')->create();
 
-    $user->assignRole(1, 'admin');
+    $user->assignRole(2, 'admin');
+});
+
+Route::get('roles/{tenant}', function ($tenant) {
+    $users =  User::role('admin', request('tenant'))->get();
+    $users = User::first()->hasRole('admin', request('tenant'));
+    dd($users);
 });
