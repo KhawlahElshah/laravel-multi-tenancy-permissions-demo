@@ -17,11 +17,21 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', function () {
     $user = factory('App\User')->create();
 
-    $user->assignRole(2, 'admin');
+    $user->assignRole(1, 'admin');
+    $user->givePermissionTo(1, 'list');
 });
 
 Route::get('roles/{tenant}', function ($tenant) {
     $users =  User::role('admin', request('tenant'))->get();
-    $users = User::first()->hasRole('admin', request('tenant'));
+    $users = User::first()->hasAllRoles('admin', request('tenant'));
+
+    dd($users);
+});
+
+
+Route::get('permissions/{tenant}', function ($tenant) {
+    $users =  User::permission('update', request('tenant'))->get();
+    $users = User::first()->hasAllDirectPermissions(request('tenant'), ['create', 'list']);
+
     dd($users);
 });

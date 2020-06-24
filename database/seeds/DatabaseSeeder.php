@@ -22,6 +22,11 @@ class DatabaseSeeder extends Seeder
         ]);
 
         Role::create(['name' => 'admin']);
+        Role::create(['name' => 'editor']);
+        Role::create(['name' => 'writer']);
+
         Permission::create(['name' => 'list']);
+        Permission::create(['name' => 'create']);
+        Permission::create(['name' => 'update']);
     }
 }

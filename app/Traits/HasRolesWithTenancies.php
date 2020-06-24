@@ -3,16 +3,51 @@
 namespace App\Traits;
 
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Illuminate\Support\Collection;
 use Spatie\Permission\Contracts\Role;
-use Spatie\Permission\Traits\HasRoles;
+use Spatie\Permission\PermissionRegistrar;
 
 trait HasRolesWithTenancies
 {
+    use HasPermissionsWithTenancies;
 
-    use HasRoles {
-        HasRoles::assignRole as SpatieHasRolesAssignRole;
+    private $roleClass;
+
+    public static function bootHasRoles()
+    {
+        static::deleting(function ($model) {
+            if (method_exists($model, 'isForceDeleting') && !$model->isForceDeleting()) {
+                return;
+            }
+
+            $model->roles()->detach();
+        });
     }
+
+    public function getRoleClass()
+    {
+        if (!isset($this->roleClass)) {
+            $this->roleClass = app(PermissionRegistrar::class)->getRoleClass();
+        }
+
+        return $this->roleClass;
+    }
+
+    /**
+     * A model may have multiple roles.
+     */
+    public function roles(): MorphToMany
+    {
+        return $this->morphToMany(
+            config('permission.models.role'),
+            'model',
+            config('permission.table_names.model_has_roles'),
+            config('permission.column_names.model_morph_key'),
+            'role_id'
+        )->withPivot(config('permission.multi_tenancy.column_name'));
+    }
+
 
     /**
      * Scope the model query to certain roles only.
@@ -57,12 +92,12 @@ trait HasRolesWithTenancies
     /**
      * Assign the given role to the model.
      *
-     * @param $tenancy
+     * @param $tenancId
      * @param array|string|\Spatie\Permission\Contracts\Role ...$roles
      *
      * @return $this
      */
-    public function assignRole($tenancy, ...$roles)
+    public function assignRole($tenancId, ...$roles)
     {
         $roles = collect($roles)
             ->flatten()
@@ -86,8 +121,8 @@ trait HasRolesWithTenancies
 
         if (config('permission.multi_tenancy.enabled')) {
             $roles = array_flip($roles);
-            $roles = array_map(function ($role) use ($tenancy) {
-                return [config('permission.multi_tenancy.column_name') => $tenancy];
+            $roles = array_map(function ($role) use ($tenancId) {
+                return [config('permission.multi_tenancy.column_name') => $tenancId];
             }, $roles);
         }
 
@@ -116,9 +151,40 @@ trait HasRolesWithTenancies
     }
 
     /**
+     * Revoke the given role from the model.
+     *
+     * @param string|\Spatie\Permission\Contracts\Role $role
+     */
+    public function removeRole($role)
+    {
+        $this->roles()->detach($this->getStoredRole($role));
+
+        $this->load('roles');
+
+        $this->forgetCachedPermissions();
+
+        return $this;
+    }
+
+    /**
+     * Remove all current roles and set the given ones.
+     *
+     * @param  array|\Spatie\Permission\Contracts\Role|string  ...$roles
+     *
+     * @return $this
+     */
+    public function syncRoles(...$roles)
+    {
+        $this->roles()->detach();
+
+        return $this->assignRole($roles);
+    }
+
+    /**
      * Determine if the model has (one of) the given role(s).
      *
      * @param string|int|array|\Spatie\Permission\Contracts\Role|\Illuminate\Support\Collection $roles
+     * @param $tenant
      * @param string|null $guard
      * @return bool
      */
@@ -128,16 +194,10 @@ trait HasRolesWithTenancies
             $roles = $this->convertPipeToArray($roles);
         }
 
-        // TODO:: start here
         if (config('permission.multi_tenancy.enabled')) {
-            $this->whereHas('roles', function (Builder $subQuery) use ($tenantId) {
-                if (config('permission.multi_tenancy.enabled')) {
-                    $subQuery->where(config('permission.table_names.model_has_roles') . config('permission.multi_tenancy.column_name'), $tenantId);
-                }
-            });
+            $this->roles = $this->roles()->wherePivot(config('permission.multi_tenancy.column_name'), $tenantId)->get();
         }
 
-        dd($this->roles);
         if (is_string($roles)) {
             return $guard
                 ? $this->roles->where('guard_name', $guard)->contains('name', $roles)
@@ -167,16 +227,34 @@ trait HasRolesWithTenancies
         return $roles->intersect($guard ? $this->roles->where('guard_name', $guard) : $this->roles)->isNotEmpty();
     }
 
+    /**
+     * Determine if the model has any of the given role(s).
+     *
+     * Alias to hasRole() but without Guard controls
+     *
+     * @param string|int|array|\Spatie\Permission\Contracts\Role|\Illuminate\Support\Collection $roles
+     *
+     * @return bool
+     */
+    public function hasAnyRole(...$roles): bool
+    {
+        return $this->hasRole($roles);
+    }
 
     /**
      * Determine if the model has all of the given role(s).
      *
      * @param  string|array|\Spatie\Permission\Contracts\Role|\Illuminate\Support\Collection  $roles
+     * @param $tenantId
      * @param  string|null  $guard
      * @return bool
      */
-    public function hasAllRoles($roles, string $guard = null): bool
+    public function hasAllRoles($roles, int $tenantId = null, string $guard = null): bool
     {
+        if (config('permission.multi_tenancy.enabled')) {
+            $this->roles = $this->roles()->wherePivot(config('permission.multi_tenancy.column_name'), $tenantId)->get();
+        }
+
         if (is_string($roles) && false !== strpos($roles, '|')) {
             $roles = $this->convertPipeToArray($roles);
         }
@@ -200,5 +278,55 @@ trait HasRolesWithTenancies
                 ? $this->roles->where('guard_name', $guard)->pluck('name')
                 : $this->getRoleNames()
         ) == $roles;
+    }
+
+    /**
+     * Return all permissions directly coupled to the model.
+     */
+    public function getDirectPermissions(): Collection
+    {
+        return $this->permissions;
+    }
+
+    public function getRoleNames(): Collection
+    {
+        return $this->roles->pluck('name');
+    }
+
+    protected function getStoredRole($role): Role
+    {
+        $roleClass = $this->getRoleClass();
+
+        if (is_numeric($role)) {
+            return $roleClass->findById($role, $this->getDefaultGuardName());
+        }
+
+        if (is_string($role)) {
+            return $roleClass->findByName($role, $this->getDefaultGuardName());
+        }
+
+        return $role;
+    }
+
+    protected function convertPipeToArray(string $pipeString)
+    {
+        $pipeString = trim($pipeString);
+
+        if (strlen($pipeString) <= 2) {
+            return $pipeString;
+        }
+
+        $quoteCharacter = substr($pipeString, 0, 1);
+        $endCharacter = substr($quoteCharacter, -1, 1);
+
+        if ($quoteCharacter !== $endCharacter) {
+            return explode('|', $pipeString);
+        }
+
+        if (!in_array($quoteCharacter, ["'", '"'])) {
+            return explode('|', $pipeString);
+        }
+
+        return explode('|', trim($pipeString, $quoteCharacter));
     }
 }
